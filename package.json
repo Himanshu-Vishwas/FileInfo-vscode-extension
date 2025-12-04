@@ -1,0 +1,64 @@
+{
+  "name": "fileinfo",
+  "displayName": "FileInfo",
+  "description": "Shows detailed file metadata including size, timestamps, image and video properties",
+  "version": "0.0.3",
+  "engines": {
+    "vscode": "^1.106.1"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:fileinfo.showInfo",
+    "onCommand:fileinfo.showActions",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:plaintext"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "fileinfo.showInfo",
+        "title": "FileInfo: Show File Info"
+      },
+      {
+        "command": "fileinfo.showActions",
+        "title": "FileInfo: Actions"
+      },
+      {
+        "command": "fileinfo.showInfoFromStatus",
+        "title": "FileInfo: Show Info (from status bar)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "fileinfo.showInfo",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.106.1",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "typescript-eslint": "^8.46.3",
+    "eslint": "^9.39.1",
+    "typescript": "^5.9.3",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2"
+  },
+  "publisher": "himanshu"
+}
