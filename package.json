@@ -2,11 +2,11 @@
   "name": "fileinfo-mm",
   "displayName": "File Info - View File Metadata",
   "description": "Shows file metadata including size, timestamps, image and csv properties",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "icon": "images/icon.png",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.106.1"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
@@ -53,7 +53,7 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.106.1",
+    "@types/vscode": "^1.90.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "typescript-eslint": "^8.46.3",

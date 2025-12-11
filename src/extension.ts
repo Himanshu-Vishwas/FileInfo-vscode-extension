@@ -156,7 +156,7 @@ export function activate(context: vscode.ExtensionContext) {
   setTimeout(triggerUpdate, 500);
 
   // Image metadata reader
-  async function readImageMetadata(filePath: string): Promise<{ format: string; width: number; height: number; channels: number } | null> {
+  async function readImageMetadata(filePath: string): Promise<{ format: string; width: number; height: number; channels: number; density?: { x: number; y: number; units: 'dpi' | 'ppi' } } | null> {
     try {
       const fh = await fsp.open(filePath, 'r');
       const buffer = Buffer.alloc(65536);
@@ -170,21 +170,67 @@ export function activate(context: vscode.ExtensionContext) {
         const height = buffer.readUInt32BE(20);
         const colorType = buffer[25];
         const channels = [0, 1, 3, 1, 2, 0, 4][colorType] || 3;
-        return { format: 'PNG', width, height, channels };
+
+        // Search for pHYs chunk
+        let offset = 8; // Skip signature
+        let density: { x: number; y: number; units: 'dpi' | 'ppi' } | undefined;
+
+        while (offset < bytesRead - 8) {
+          const length = buffer.readUInt32BE(offset);
+          const type = buffer.toString('ascii', offset + 4, offset + 8);
+
+          if (type === 'pHYs' && length >= 9) {
+            const ppuX = buffer.readUInt32BE(offset + 8);
+            const ppuY = buffer.readUInt32BE(offset + 12);
+            const unit = buffer[offset + 16];
+
+            if (unit === 1) { // Meter
+              // Convert pixels per meter to pixels per inch (1 inch = 0.0254 meters)
+              const ppiX = Math.round(ppuX * 0.0254);
+              const ppiY = Math.round(ppuY * 0.0254);
+              density = { x: ppiX, y: ppiY, units: 'ppi' };
+            }
+            break;
+          }
+
+          offset += 12 + length; // Length + Type + Data + CRC
+        }
+
+        return { format: 'PNG', width, height, channels, density };
       }
 
       // JPEG
       if (buffer[0] === 0xFF && buffer[1] === 0xD8) {
         let i = 2;
+        let density: { x: number; y: number; units: 'dpi' | 'ppi' } | undefined;
+        let width = 0, height = 0, channels = 3;
+
+        // Check APP0 for density
+        if (buffer[2] === 0xFF && buffer[3] === 0xE0) {
+          const length = buffer.readUInt16BE(4);
+          const identifier = buffer.toString('ascii', 6, 10);
+          if (identifier === 'JFIF' && length >= 14) {
+            const units = buffer[13];
+            const xDensity = buffer.readUInt16BE(14);
+            const yDensity = buffer.readUInt16BE(16);
+
+            if (units === 1) { // Dots per inch
+              density = { x: xDensity, y: yDensity, units: 'dpi' };
+            } else if (units === 2) { // Dots per cm
+              density = { x: Math.round(xDensity * 2.54), y: Math.round(yDensity * 2.54), units: 'dpi' };
+            }
+          }
+        }
+
         while (i < bytesRead - 9) {
           if (buffer[i] !== 0xFF) { i++; continue; }
           const marker = buffer[i + 1];
           if (marker === 0xFF) { i++; continue; }
           if (marker >= 0xC0 && marker <= 0xCF && marker !== 0xC4 && marker !== 0xC8 && marker !== 0xCC) {
-            const height = buffer.readUInt16BE(i + 5);
-            const width = buffer.readUInt16BE(i + 7);
-            const components = buffer[i + 9] || 3;
-            return { format: 'JPEG', width, height, channels: components };
+            height = buffer.readUInt16BE(i + 5);
+            width = buffer.readUInt16BE(i + 7);
+            channels = buffer[i + 9] || 3;
+            return { format: 'JPEG', width, height, channels, density };
           }
           i += 2 + buffer.readUInt16BE(i + 2);
         }
@@ -197,7 +243,23 @@ export function activate(context: vscode.ExtensionContext) {
         const height = Math.abs(buffer.readInt32LE(22));
         const bpp = buffer.readUInt16LE(28);
         const channels = Math.max(1, Math.floor(bpp / 8));
-        return { format: 'BMP', width, height, channels };
+
+        // Extract resolution from BITMAPINFOHEADER
+        // XPelsPerMeter is at offset 24 (from header start) -> 14 + 24 = 38
+        // YPelsPerMeter is at offset 28 (from header start) -> 14 + 28 = 42
+        let density: { x: number; y: number; units: 'dpi' | 'ppi' } | undefined;
+
+        if (bytesRead >= 46) {
+          const xPPM = buffer.readInt32LE(38);
+          const yPPM = buffer.readInt32LE(42);
+          if (xPPM > 0 && yPPM > 0) {
+            const ppiX = Math.round(xPPM * 0.0254);
+            const ppiY = Math.round(yPPM * 0.0254);
+            density = { x: ppiX, y: ppiY, units: 'ppi' };
+          }
+        }
+
+        return { format: 'BMP', width, height, channels, density };
       }
 
       // GIF
@@ -285,75 +347,104 @@ export function activate(context: vscode.ExtensionContext) {
 
     const filePath = uri.fsPath;
     const base = path.basename(filePath);
-    const stats = await readStats(filePath);
+    const extName = path.extname(base);
+    const typeLabel = extName ? extName.substring(1).toUpperCase() : 'File';
 
-    const lines: string[] = [];
-    lines.push(`Path: ${filePath}`);
-    lines.push(`Name: ${base}`);
+    // Show loading state
+    statusBar.text = `$(sync~spin) Reading ${typeLabel} details...`;
+    statusBar.tooltip = `Reading ${typeLabel} metadata...`;
 
-    if (!stats) {
-      const pick = await vscode.window.showInformationMessage(
-        `Folder: ${base}\n(Cannot read contents)`,
-        { modal: true },
-        'Copy path', 'Close'
-      );
-      if (pick === 'Copy path') {
-        await vscode.env.clipboard.writeText(filePath);
-        vscode.window.showInformationMessage('Path copied');
-      }
-      return;
-    }
+    try {
+      const stats = await readStats(filePath);
 
-    const isFile = stats.isFile();
-    const isDir = stats.isDirectory();
-    const ext = isFile ? (path.extname(base).toLowerCase() || '—') : '—';
-    const sizeText = isFile ? `${formatSize(stats.size)} (${stats.size} bytes)` : '—';
+      const lines: string[] = [];
+      lines.push(`Path: ${filePath}`);
+      lines.push(`Name: ${base}`);
 
-    lines.push(`Extension: ${ext}`);
-    lines.push(`Size: ${sizeText}`);
-    if (isDir) {
-      const { files, dirs } = await getImmediateCounts(filePath);
-      lines.push(`Direct children: ${files} files, ${dirs} folders`);
-    }
-    lines.push(`Created: ${stats.birthtime?.toLocaleString() ?? '—'}`);
-    lines.push(`Modified: ${stats.mtime.toLocaleString()}`);
-    lines.push(`Accessed: ${stats.atime.toLocaleString()}`);
-
-    if (isFile) {
-      const imageExts = ['.png', '.jpg', '.jpeg', '.bmp', '.gif'];
-      if (imageExts.includes(ext)) {
-        const meta = await readImageMetadata(filePath);
-        if (meta) {
-          lines.push(`Image: ${meta.format} — ${meta.width}×${meta.height}px — channels: ${meta.channels}`);
+      if (!stats) {
+        const pick = await vscode.window.showInformationMessage(
+          `Folder: ${base}\n(Cannot read contents)`,
+          { modal: true },
+          'Copy path', 'Close'
+        );
+        if (pick === 'Copy path') {
+          await vscode.env.clipboard.writeText(filePath);
+          vscode.window.showInformationMessage('Path copied');
         }
-      } else if (ext === '.csv') {
-        const csv = await readCsvMetadata(filePath);
-        if (csv) {
-          lines.push(`CSV Info:`);
-          lines.push(`  Rows: ${csv.rows}`);
-          lines.push(`  Columns: ${csv.columns}`);
-          lines.push(`  Headers: ${csv.headers.join(', ')}`);
-          if (csv.firstRow.length > 0) {
-            lines.push(`  First Row: ${csv.firstRow.join(', ')}`);
+        return;
+      }
+
+      const isFile = stats.isFile();
+      const isDir = stats.isDirectory();
+      const ext = isFile ? (path.extname(base).toLowerCase() || '—') : '—';
+      const sizeText = isFile ? `${formatSize(stats.size)} (${stats.size} bytes)` : '—';
+
+      lines.push(`Extension: ${ext}`);
+      lines.push(`Size: ${sizeText}`);
+      if (isDir) {
+        const { files, dirs } = await getImmediateCounts(filePath);
+        lines.push(`Direct children: ${files} files, ${dirs} folders`);
+      }
+      lines.push(`Created: ${stats.birthtime?.toLocaleString() ?? '—'}`);
+      lines.push(`Modified: ${stats.mtime.toLocaleString()}`);
+      lines.push(`Accessed: ${stats.atime.toLocaleString()}`);
+
+      if (isFile) {
+        const imageExts = ['.png', '.jpg', '.jpeg', '.bmp', '.gif'];
+        if (imageExts.includes(ext)) {
+          const meta = await readImageMetadata(filePath);
+          if (meta) {
+            lines.push(`Image Info:`);
+            lines.push(`  Format: ${meta.format}`);
+            lines.push(`  Dimensions: ${meta.width}×${meta.height}px`);
+            lines.push(`  Channels: ${meta.channels}`);
+            if (meta.density) {
+              const { x, y, units } = meta.density;
+              const densityStr = x === y ? `${x} ${units.toUpperCase()}` : `${x}x${y} ${units.toUpperCase()}`;
+              lines.push(`  Resolution: ${densityStr}`);
+            }
+          }
+        } else if (ext === '.csv') {
+          const csv = await readCsvMetadata(filePath);
+          if (csv) {
+            lines.push(`CSV Info:`);
+            lines.push(`  Rows: ${csv.rows}`);
+            lines.push(`  Columns: ${csv.columns}`);
+            lines.push(`  Headers: ${csv.headers.join(', ')}`);
+            if (csv.firstRow.length > 0) {
+              lines.push(`  First Row: ${csv.firstRow.join(', ')}`);
+            }
           }
         }
       }
-    }
 
-    const message = lines.join('\n');
-    const pick = await vscode.window.showInformationMessage(message, { modal: true }, 'Copy details', 'Copy path', 'Close');
+      const message = lines.join('\n');
 
-    if (pick === 'Copy details') {
-      try {
-        const doc = await vscode.workspace.openTextDocument({ content: message, language: 'text' });
-        await vscode.window.showTextDocument(doc, { preview: true });
-      } catch {
-        await vscode.env.clipboard.writeText(message);
-        vscode.window.showInformationMessage('Details copied to clipboard');
+      // Restore status before showing modal so it doesn't look stuck if modal is open
+      await updateStatus(uri);
+
+      const pick = await vscode.window.showInformationMessage(message, { modal: true }, 'Copy details', 'Copy path', 'Close');
+
+      if (pick === 'Copy details') {
+        try {
+          const doc = await vscode.workspace.openTextDocument({ content: message, language: 'text' });
+          await vscode.window.showTextDocument(doc, { preview: true });
+        } catch {
+          await vscode.env.clipboard.writeText(message);
+          vscode.window.showInformationMessage('Details copied to clipboard');
+        }
+      } else if (pick === 'Copy path') {
+        await vscode.env.clipboard.writeText(filePath);
+        vscode.window.showInformationMessage('Path copied');
       }
-    } else if (pick === 'Copy path') {
-      await vscode.env.clipboard.writeText(filePath);
-      vscode.window.showInformationMessage('Path copied');
+    } finally {
+      // Ensure status is restored even if error occurs
+      if (lastUri && lastUri.toString() === uri.toString()) {
+        await updateStatus(uri);
+      } else {
+        // If selection changed or something else, just trigger generic update
+        triggerUpdate();
+      }
     }
   };
 
