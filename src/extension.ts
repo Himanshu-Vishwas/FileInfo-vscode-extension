@@ -186,8 +186,8 @@ export function activate(context: vscode.ExtensionContext) {
 
             if (unit === 1) { // Meter
               // Convert pixels per meter to pixels per inch (1 inch = 0.0254 meters)
-              const ppiX = Math.round(ppuX * 0.0254);
-              const ppiY = Math.round(ppuY * 0.0254);
+              const ppiX = parseFloat((ppuX * 0.0254).toFixed(2));
+              const ppiY = parseFloat((ppuY * 0.0254).toFixed(2));
               density = { x: ppiX, y: ppiY, units: 'ppi' };
             }
             break;
@@ -217,7 +217,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (units === 1) { // Dots per inch
               density = { x: xDensity, y: yDensity, units: 'dpi' };
             } else if (units === 2) { // Dots per cm
-              density = { x: Math.round(xDensity * 2.54), y: Math.round(yDensity * 2.54), units: 'dpi' };
+              density = { x: parseFloat((xDensity * 2.54).toFixed(2)), y: parseFloat((yDensity * 2.54).toFixed(2)), units: 'dpi' };
             }
           }
         }
@@ -250,11 +250,11 @@ export function activate(context: vscode.ExtensionContext) {
         let density: { x: number; y: number; units: 'dpi' | 'ppi' } | undefined;
 
         if (bytesRead >= 46) {
-          const xPPM = buffer.readInt32LE(38);
-          const yPPM = buffer.readInt32LE(42);
+          const xPPM = buffer.readUInt32LE(38); // Header offset 38 (0x26)
+          const yPPM = buffer.readUInt32LE(42); // Header offset 42 (0x2A)
           if (xPPM > 0 && yPPM > 0) {
-            const ppiX = Math.round(xPPM * 0.0254);
-            const ppiY = Math.round(yPPM * 0.0254);
+            const ppiX = parseFloat((xPPM * 0.0254).toFixed(2));
+            const ppiY = parseFloat((yPPM * 0.0254).toFixed(2));
             density = { x: ppiX, y: ppiY, units: 'ppi' };
           }
         }
@@ -359,13 +359,13 @@ export function activate(context: vscode.ExtensionContext) {
 
       const lines: string[] = [];
       lines.push(`Path: ${filePath}`);
-      lines.push(`Name: ${base}`);
+      // User removed Path and Name
 
       if (!stats) {
         const pick = await vscode.window.showInformationMessage(
           `Folder: ${base}\n(Cannot read contents)`,
           { modal: true },
-          'Copy path', 'Close'
+          'Copy path'
         );
         if (pick === 'Copy path') {
           await vscode.env.clipboard.writeText(filePath);
@@ -376,66 +376,61 @@ export function activate(context: vscode.ExtensionContext) {
 
       const isFile = stats.isFile();
       const isDir = stats.isDirectory();
-      const ext = isFile ? (path.extname(base).toLowerCase() || '—') : '—';
+      // User removed Extension
       const sizeText = isFile ? `${formatSize(stats.size)} (${stats.size} bytes)` : '—';
 
-      lines.push(`Extension: ${ext}`);
       lines.push(`Size: ${sizeText}`);
       if (isDir) {
         const { files, dirs } = await getImmediateCounts(filePath);
         lines.push(`Direct children: ${files} files, ${dirs} folders`);
       }
-      lines.push(`Created: ${stats.birthtime?.toLocaleString() ?? '—'}`);
-      lines.push(`Modified: ${stats.mtime.toLocaleString()}`);
-      lines.push(`Accessed: ${stats.atime.toLocaleString()}`);
 
       if (isFile) {
         const imageExts = ['.png', '.jpg', '.jpeg', '.bmp', '.gif'];
+        const ext = path.extname(base).toLowerCase(); // Re-derive ext locally since we removed previous declaration line usage if it was only for display? No, we need ext for check.
+
         if (imageExts.includes(ext)) {
           const meta = await readImageMetadata(filePath);
           if (meta) {
-            lines.push(`Image Info:`);
-            lines.push(`  Format: ${meta.format}`);
-            lines.push(`  Dimensions: ${meta.width}×${meta.height}px`);
-            lines.push(`  Channels: ${meta.channels}`);
+            let imgInfo = `Dimensions: ${meta.width}×${meta.height}px, Channels: ${meta.channels}`;
             if (meta.density) {
               const { x, y, units } = meta.density;
               const densityStr = x === y ? `${x} ${units.toUpperCase()}` : `${x}x${y} ${units.toUpperCase()}`;
-              lines.push(`  Resolution: ${densityStr}`);
+              imgInfo += `, Resolution: ${densityStr}`;
             }
+            lines.push(imgInfo);
           }
         } else if (ext === '.csv') {
           const csv = await readCsvMetadata(filePath);
           if (csv) {
-            lines.push(`CSV Info:`);
-            lines.push(`  Rows: ${csv.rows}`);
-            lines.push(`  Columns: ${csv.columns}`);
-            lines.push(`  Headers: ${csv.headers.join(', ')}`);
+            lines.push(`Rows: ${csv.rows}, Columns: ${csv.columns}`);
+            lines.push(`Headers: ${csv.headers.join(', ')}`);
             if (csv.firstRow.length > 0) {
-              lines.push(`  First Row: ${csv.firstRow.join(', ')}`);
+              lines.push(`First Row: ${csv.firstRow.join(', ')}`);
             }
           }
         }
       }
+
+      lines.push(`Created: ${stats.birthtime?.toLocaleString() ?? '—'}`);
+      lines.push(`Modified: ${stats.mtime.toLocaleString()}`);
+      lines.push(`Accessed: ${stats.atime.toLocaleString()}`);
 
       const message = lines.join('\n');
 
       // Restore status before showing modal so it doesn't look stuck if modal is open
       await updateStatus(uri);
 
-      const pick = await vscode.window.showInformationMessage(message, { modal: true }, 'Copy details', 'Copy path', 'Close');
+      const pick = await vscode.window.showInformationMessage(message, { modal: true }, 'Copy details', 'Copy path', 'Feedback');
 
       if (pick === 'Copy details') {
-        try {
-          const doc = await vscode.workspace.openTextDocument({ content: message, language: 'text' });
-          await vscode.window.showTextDocument(doc, { preview: true });
-        } catch {
-          await vscode.env.clipboard.writeText(message);
-          vscode.window.showInformationMessage('Details copied to clipboard');
-        }
+        await vscode.env.clipboard.writeText(message);
+        vscode.window.showInformationMessage('Details copied to clipboard');
       } else if (pick === 'Copy path') {
         await vscode.env.clipboard.writeText(filePath);
         vscode.window.showInformationMessage('Path copied');
+      } else if (pick === 'Feedback') {
+        await vscode.env.openExternal(vscode.Uri.parse('https://forms.gle/hUAFyYQYPmHr1fW27'));
       }
     } finally {
       // Ensure status is restored even if error occurs

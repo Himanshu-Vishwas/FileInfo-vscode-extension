@@ -2,7 +2,7 @@
   "name": "fileinfo-mm",
   "displayName": "File Info - View File Metadata",
   "description": "Shows file metadata including size, timestamps, image and csv properties",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "icon": "images/icon.png",
   "license": "MIT",
   "engines": {
